@@ -6,7 +6,7 @@ A barrier-aware kriging implementation that uses obstacle-avoiding path distance
 
 | SeaPath | SeaKrige |
 |---------------------------------------------|-------------------------------------------|
-| <img src="https://github.com/ShawnChen09/seakrige/raw/main/img/sea_path.jpg" width="300"/> | <img src="https://github.com/ShawnChen09/seakrige/raw/main/img/sea_krige.jpg" width="300"/> |
+| <img src="https://github.com/ShawnChen09/SeaKrige/raw/main/img/sea_path.jpg" width="300"/> | <img src="https://github.com/ShawnChen09/SeaKrige/raw/main/img/sea_krige.jpg" width="300"/> |
 
 ## Installation
 
