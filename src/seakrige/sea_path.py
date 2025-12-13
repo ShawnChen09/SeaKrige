@@ -1,159 +1,297 @@
-import math
+import heapq
+from pathlib import Path
 
-import contextily as cx
-import geopandas as gpd
-import networkx as nx
+import matplotlib.pyplot as plt
 import numpy as np
-from libpysal import cg, weights
-from scipy.spatial import KDTree, distance
-from shapely.geometry import LineString, Point, Polygon
+import pyogrio
+from shapely.geometry import LineString
+from shapely.ops import unary_union
+
+from .config import Config
+
+
+class Graph:
+    def __init__(self):
+        self.nodes = {}
+        self.edges = {}
+
+    def add_node(self, node_id, **attrs):
+        self.nodes[node_id] = attrs
+
+    def add_edge(self, u, v, weight=1.0):
+        if u not in self.edges:
+            self.edges[u] = {}
+        if v not in self.edges:
+            self.edges[v] = {}
+        self.edges[u][v] = weight
+        self.edges[v][u] = weight
+
+    def get_neighbors(self, node_id):
+        return self.edges.get(node_id, {}).keys()
+
+    def copy(self):
+        new_G = Graph()
+        new_G.nodes = self.nodes.copy()
+        new_G.edges = {k: v.copy() for k, v in self.edges.items()}
+        return new_G
+
+    def _dijkstra(self, start, end):
+        distances = {node: float("inf") for node in self.nodes}
+        distances[start] = 0
+        previous = {}
+        pq = [(0, start)]
+        visited = set()
+
+        while pq:
+            current_dist, current = heapq.heappop(pq)
+
+            if current in visited:
+                continue
+            visited.add(current)
+
+            if current == end:
+                path = []
+                while current is not None:
+                    path.append(current)
+                    current = previous.get(current)
+                return path[::-1]
+
+            for neighbor in self.get_neighbors(current):
+                if neighbor in visited:
+                    continue
+
+                weight = self.edges[current][neighbor]
+                distance = current_dist + weight
+
+                if distance < distances[neighbor]:
+                    distances[neighbor] = distance
+                    previous[neighbor] = current
+                    heapq.heappush(pq, (distance, neighbor))
+
+        raise ValueError("No path exists")
+
+    def dijkstra(self, start, end):
+        self.path = self._dijkstra(start, end)
+        self.length = 0
+        for i in range(len(self.path) - 1):
+            self.length += self.edges[self.path[i]][self.path[i + 1]]
 
 
 class SeaPath:
-    def __init__(
-        self, shapefile, resolution=0.05, grid_shape="square", w_method="queen", k=8
-    ):
-        """
-        :param shapefile: path to the shapefile.
-        :param resolution: resolution of the grid.
-        :param grid_shape: shape of the grid, either "triangle" or "square".
-        :param w_method: method for creating the weights, "queen", "rook", or "knn".
-        :param k: number of nearest neighbors for the weights. Only used if w_method is "knn".
-        """
-        self._load_gdf(shapefile)
-        self._get_coords_from_gdf(r=resolution, shape=grid_shape)
-        self._create_G_from_coords(w=w_method, k=k)
-        self._filter_G()
-        self._update_node_mapping()
-        self.kdtree = KDTree(list(self.pos.values()))
+    def __init__(self, shapefile, verbose=True):
+        if not isinstance(shapefile, (str, Path)):
+            raise ValueError("shapefile must be a string or Path")
 
-    def _load_gdf(self, shapefile):
-        self.gdf = gpd.read_file(shapefile)
-        self.crs = self.gdf.crs
+        self.config = Config(verbose=verbose)
+        self.verbose = verbose
 
-    def _get_coords_from_gdf(self, r, shape):
-        xmin, ymin, xmax, ymax = self.gdf.total_bounds
-        spacing = min((xmax - xmin) * r, (ymax - ymin) * r)
+        self.load_shp(shapefile)
+        self.extract_v()
+        self.build_graph()
+        self._path_cache = {}
 
-        if shape == "triangle":
-            x_extend, y_extend = (xmax - xmin) * 0.1, (ymax - ymin) * 0.1
+    def load_shp(self, shapefile):
+        gdf = pyogrio.read_dataframe(shapefile)
+        self.crs = gdf.crs
+        self.obs = unary_union(gdf.geometry)
+        self.is_multipolygon = hasattr(self.obs, "geoms")
 
-            dx = spacing  # Horizontal distance between points
-            dy = (
-                dx * math.sqrt(3) / 2
-            )  # Vertical distance between rows (based on equilateral triangle geometry)
-
-            xcoords = np.arange(xmin - x_extend, xmax + x_extend, dx)
-            ycoords = np.arange(ymin - y_extend, ymax + y_extend, dy)
-
-            coords = []
-            for i, y in enumerate(ycoords):
-                if i % 2 == 0:
-                    x_offset = 0
-                else:
-                    x_offset = dx / 2
-                coords.extend([(x + x_offset, y) for x in xcoords])
-
-            self.xycoords = np.array(coords)
-
-        elif shape == "square":
-            x_extend, y_extend = (xmax - xmin) * 0.1, (ymax - ymin) * 0.1
-
-            xcoords = [i for i in np.arange(xmin - x_extend, xmax + x_extend, spacing)]
-            ycoords = [i for i in np.arange(ymin - y_extend, ymax + y_extend, spacing)]
-
-            self.xycoords = np.array(np.meshgrid(xcoords, ycoords)).T.reshape(
-                -1, 2
-            )  # a 2D array like [[x1,y1], [x1,y2], ...
-
+        if hasattr(self.obs, "bounds"):
+            self.bounds = self.obs.bounds
         else:
-            raise ValueError("Invalid shape. Choose 'triangle' or 'square'.")
+            self.bounds = (0, 0, 1, 1)
 
-    def _create_G_from_coords(self, w, k):
-        self.cells = cg.voronoi_frames(
-            self.xycoords, clip="convex_hull", return_input=False, as_gdf=True
-        )
-        if w == "rook":
-            self.W = weights.contiguity.Rook.from_dataframe(self.cells, use_index=False)
-        elif w == "queen":
-            self.W = weights.contiguity.Queen.from_dataframe(
-                self.cells, use_index=False
+    def extract_v(self):
+        verts = []
+
+        if self.is_multipolygon:
+            for geom in self.obs.geoms:
+                verts.extend(list(geom.exterior.coords[:-1]))
+                coords = list(geom.exterior.coords)
+                for i in range(len(coords) - 1):
+                    mid = (
+                        (coords[i][0] + coords[i + 1][0]) / 2,
+                        (coords[i][1] + coords[i + 1][1]) / 2,
+                    )
+                    verts.append(mid)
+                for interior in geom.interiors:
+                    verts.extend(list(interior.coords[:-1]))
+        else:
+            verts.extend(list(self.obs.exterior.coords[:-1]))
+            coords = list(self.obs.exterior.coords)
+            for i in range(len(coords) - 1):
+                mid = (
+                    (coords[i][0] + coords[i + 1][0]) / 2,
+                    (coords[i][1] + coords[i + 1][1]) / 2,
+                )
+                verts.append(mid)
+            for interior in self.obs.interiors:
+                verts.extend(list(interior.coords[:-1]))
+
+        xmin, ymin, xmax, ymax = self.bounds
+        margin = self.config.BOUNDARY_MARGIN
+        boundary_points = [
+            (xmin - margin, ymin - margin),
+            (xmax + margin, ymin - margin),
+            (xmax + margin, ymax + margin),
+            (xmin - margin, ymax + margin),
+            (xmin - margin, (ymin + ymax) / 2),
+            (xmax + margin, (ymin + ymax) / 2),
+            ((xmin + xmax) / 2, ymin - margin),
+            ((xmin + xmax) / 2, ymax + margin),
+        ]
+        verts.extend(boundary_points)
+
+        self.vertices = np.array(verts)
+
+    def is_visible(self, p1, p2):
+        l = LineString([p1, p2])
+        return not self.obs.crosses(l) and not self.obs.contains(l)
+
+    def build_graph(self):
+        self.G = Graph()
+        n_vertices = len(self.vertices)
+
+        if self.verbose:
+            self.config.logger.info(f"Building graph with {n_vertices} vertices")
+
+        for i, vertex in enumerate(self.vertices):
+            self.G.add_node(i, pos=vertex)
+
+        edges_added = 0
+        for i in range(n_vertices):
+            for j in range(i + 1, n_vertices):
+                if self.is_visible(self.vertices[i], self.vertices[j]):
+                    dist = np.linalg.norm(self.vertices[i] - self.vertices[j])
+                    self.G.add_edge(i, j, weight=dist)
+                    edges_added += 1
+
+        if self.verbose:
+            self.config.logger.info(f"Added {edges_added} edges to graph")
+
+    def calc_direct_distance(self, s: tuple[float, float], t: tuple[float, float]):
+        return np.linalg.norm(np.array(s) - np.array(t))
+
+    def calc_path_from_G(self, s: tuple[float, float], t: tuple[float, float]):
+        self.config.logger.info(f"Calculating path from {s} to {t}")
+
+        cache_key = (tuple(s), tuple(t))
+        if self.config.ENABLE_CACHING and cache_key in self._path_cache:
+            cached = self._path_cache[cache_key]
+            self.path_coords = cached["path_coords"]
+            self.path_length = cached["length"]
+            self.config.logger.info(
+                f"Using cached path, length: {self.path_length:.4f}"
             )
-        elif w == "knn":
-            self.W = weights.distance.KNN.from_dataframe(self.cells, k=k)
+            return self.path_length
+
+        if self.is_visible(s, t):
+            direct_dist = self.calc_direct_distance(s, t)
+            self.config.logger.info(f"Direct distance: {direct_dist:.4f} units")
+            self.path_coords = [s, t]
+            self.path_length = direct_dist
+            self._path_cache[cache_key] = {
+                "path_coords": self.path_coords,
+                "length": self.path_length,
+            }
+            return self.path_length
         else:
-            raise ValueError("Invalid weight method. Choose 'rook', 'queen', or 'knn'.")
-        self.G = self.W.to_networkx()
-        self.pos = dict(zip(self.G.nodes, self.xycoords))
-        self.rev_pos = {tuple(v): k for k, v in self.pos.items()}
+            self.config.logger.info("Direct path blocked by land")
 
-    def _filter_G(self):
-        blocking_area = self.gdf.unary_union
+        G_temp = self.G.copy()
+        source_id = self.add_temp_point(G_temp, s)
+        target_id = self.add_temp_point(G_temp, t)
 
-        for edge in list(self.G.edges):
-            line = LineString([self.pos[edge[0]], self.pos[edge[1]]])
-            if line.intersects(blocking_area):
-                self.G.remove_edge(*edge)
+        if self.is_visible(s, t):
+            dist = self.calc_direct_distance(s, t)
+            G_temp.add_edge(source_id, target_id, weight=dist)
 
-        for node in list(self.G.nodes):
-            point = Point(np.array(self.pos[node]))
-            if point.intersects(blocking_area):
-                self.G.remove_node(node)
+        try:
+            G_temp.dijkstra(source_id, target_id)
+            self.path_coords = [G_temp.nodes[node]["pos"] for node in G_temp.path]
+            self.path_length = G_temp.length
 
-        self.distances = {
-            (u, v): distance.euclidean(self.pos[u], self.pos[v])
-            for u in self.G.nodes
-            for v in self.G.nodes
-            if u != v
-        }
+            self._path_cache[cache_key] = {
+                "path_coords": self.path_coords,
+                "length": self.path_length,
+            }
+            self.config.logger.info(f"Sea Path length: {self.path_length:.4f} units")
+            return self.path_length
 
-    def _update_node_mapping(self):
-        valid_nodes = list(self.G.nodes)
-        valid_coords = [self.pos[node] for node in valid_nodes if node in self.pos]
-        self.pos = dict(zip(valid_nodes, valid_coords))
-        self.rev_pos = {tuple(coord): node for node, coord in self.pos.items()}
-        self.kdtree = KDTree(list(self.pos.values()))
+        except ValueError:
+            raise ValueError("No path exists between coordinates")
 
-    def _find_node(self, coords):
-        _, idx = self.kdtree.query(coords)
-        closest_coord = list(self.pos.values())[idx]
-        return self.rev_pos[tuple(closest_coord)]
+    def add_temp_point(self, graph, p):
+        point_id = max(graph.nodes.keys()) + 1 if graph.nodes else len(self.vertices)
+        graph.add_node(point_id, pos=p)
 
-    def _get_shortest_path(self, source, target):
-        return nx.dijkstra_path(self.G, source=source, target=target)
+        for node_id in graph.nodes:
+            if node_id == point_id:
+                continue
+            vertex = graph.nodes[node_id]["pos"]
+            if self.is_visible(p, vertex):
+                dist = np.linalg.norm(np.array(p) - np.array(vertex))
+                graph.add_edge(point_id, node_id, weight=dist)
 
-    def calc_path_from_G(self, source_coord, target_coord):
-        source = self._find_node(source_coord)
-        target = self._find_node(target_coord)
-        self.path = self._get_shortest_path(source, target)
-        self.path_edges = [i for i in zip(self.path, self.path[1:])]
+        return point_id
 
-        self.path_length = sum(self.distances[(u, v)] for u, v in self.path_edges)
-        return self.path_length
+    def plot_path(self):
+        if not hasattr(self, "path_coords"):
+            raise ValueError("No path calculated. Call calc_path_from_G() first.")
+
+        path_coords = np.array(self.path_coords)
+        plt.plot(
+            path_coords[:, 0],
+            path_coords[:, 1],
+            color=self.config.PATH_COLOR,
+            linewidth=self.config.PATH_WIDTH,
+            marker="o",
+            markersize=4,
+        )
+        plt.scatter(
+            path_coords[0, 0],
+            path_coords[0, 1],
+            s=100,
+            label="Start",
+        )
+        plt.scatter(
+            path_coords[-1, 0],
+            path_coords[-1, 1],
+            s=100,
+            label="End",
+        )
+
+    def plot_G(self):
+        for node_id, attrs in self.G.nodes.items():
+            pos = attrs["pos"]
+            plt.scatter(pos[0], pos[1], s=self.config.NODE_SIZE, c="blue", alpha=0.6)
+
+        for node_id, neighbors in self.G.edges.items():
+            pos1 = self.G.nodes[node_id]["pos"]
+            for neighbor_id in neighbors:
+                pos2 = self.G.nodes[neighbor_id]["pos"]
+                plt.plot(
+                    [pos1[0], pos2[0]],
+                    [pos1[1], pos2[1]],
+                    "gray",
+                    linewidth=self.config.EDGE_SIZE,
+                    alpha=0.6,
+                )
 
     def plot_geomap(self):
-        ax = self.cells.plot(
-            facecolor="lightblue",
-            alpha=0.10,
-        )
-        cx.add_basemap(ax, crs=self.crs)
+        if self.is_multipolygon:
+            for geom in self.obs.geoms:
+                x, y = geom.exterior.xy
+                plt.fill(x, y, facecolor=self.config.LAND_COLOR, alpha=0.7)
+        else:
+            x, y = self.obs.exterior.xy
+            plt.fill(x, y, facecolor=self.config.LAND_COLOR, alpha=0.7)
 
-    def plot_G(self, node_size=1, edge_size=1):
-        nx.draw(
-            self.G,
-            self.pos,
-            node_size=node_size,
-            width=edge_size,
-            node_color="k",
-            edge_color="k",
-            alpha=0.9,
-        )
+        plt.gca().set_facecolor(self.config.SEA_COLOR)
 
-    def plot_path(self, path_color="r", width=2):
-        nx.draw_networkx_edges(
-            self.G,
-            self.pos,
-            edgelist=list(self.path_edges),
-            edge_color=path_color,
-            width=width,
-        )
+    def plot(self, show=True):
+        self.plot_geomap()
+        self.plot_G()
+        self.plot_path()
+        if show:
+            plt.show()
