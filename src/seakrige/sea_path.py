@@ -1,5 +1,4 @@
 import heapq
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -79,9 +78,6 @@ class Graph:
 
 class SeaPath:
     def __init__(self, shapefile, verbose=True):
-        if not isinstance(shapefile, (str, Path)):
-            raise ValueError("shapefile must be a string or Path")
-
         self.config = Config(verbose=verbose)
         self.verbose = verbose
 
@@ -152,8 +148,7 @@ class SeaPath:
         self.G = Graph()
         n_vertices = len(self.vertices)
 
-        if self.verbose:
-            self.config.logger.info(f"Building graph with {n_vertices} vertices")
+        self.config.logger.info(f"Building graph with {n_vertices} vertices")
 
         for i, vertex in enumerate(self.vertices):
             self.G.add_node(i, pos=vertex)
@@ -166,8 +161,7 @@ class SeaPath:
                     self.G.add_edge(i, j, weight=dist)
                     edges_added += 1
 
-        if self.verbose:
-            self.config.logger.info(f"Added {edges_added} edges to graph")
+        self.config.logger.info(f"Added {edges_added} edges to graph")
 
     def calc_direct_distance(self, s: tuple[float, float], t: tuple[float, float]):
         return np.linalg.norm(np.array(s) - np.array(t))

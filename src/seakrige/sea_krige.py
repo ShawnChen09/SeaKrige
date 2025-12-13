@@ -1,250 +1,169 @@
-from typing import Literal
-
-import contextily as cx
 import geopandas as gpd
-import geopandas.tools
-import gstools as gs
 import matplotlib.pyplot as plt
 import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from geokrige.tools import TransformerGDF
-from scipy.spatial import distance
+import pykrige.core
+import pykrige.ok
+from pykrige.ok import OrdinaryKriging
+from shapely.geometry import Point
 
-from seakrige import SeaPath
+from .config import Config
+from .sea_path import SeaPath
 
 
-class SeaKrige(SeaPath):
+class SeaKrige:
     def __init__(
         self,
-        known_points,
-        z,
+        longitude,
+        latitude,
+        z_values,
         shapefile,
-        resolution=0.1,
-        grid_shape="square",
-        w_method="queen",
-        k=8,
+        variogram_model="spherical",
+        variogram_parameters=[1.0, 0.5, 0.1],
+        verbose=True,
     ):
-        super().__init__(shapefile, resolution, grid_shape, w_method, k)
-        self.known_points = known_points
-        self.z = z
-        self.dist_func = self.calc_path_from_G
-        self.models = {
-            "Gaussian": gs.Gaussian,
-            "Exponential": gs.Exponential,
-            "Matern": gs.Matern,
-            "Stable": gs.Stable,
-            "Rational": gs.Rational,
-            "Circular": gs.Circular,
-            "Spherical": gs.Spherical,
-            "SuperSpherical": gs.SuperSpherical,
-            "JBessel": gs.JBessel,
-        }
-        self._calc_distmx()
-        self._calc_semivariance()
-        self._bin_data()
-        self._fit_variogram()
-        self._get_variogram_matrix()
+        self.config = Config(verbose=verbose)
 
-    def plot_scatter(
-        self,
-        colormap: str = "viridis",
-        mapbox_style="open-street-map",
-        zoom: int | None = None,
-        range_color: tuple[float, float] = None,
-        center: dict[Literal["lat", "lon"], float] = {"lat": 24.2, "lon": 120},
-        title: str = None,
-        marker_size: int = 16,
-        marker_opacity: int = 0.7,
-        layout_margin: dict[Literal["r", "t", "l", "b"], float] = {
-            "r": 0,
-            "t": 40,
-            "l": 0,
-            "b": 0,
-        },
-        layout_width: float = None,
-        layout_height: float = None,
-        html_path: str = None,
-        show_fig: bool = True,
-    ):
-        df = {
-            "lat": self.known_points[:, 1],
-            "lon": self.known_points[:, 0],
-            "value": self.z,
-        }
-        fig = px.scatter_mapbox(
-            df,
-            lat="lat",
-            lon="lon",
-            color="value",
-            color_continuous_scale=colormap,
-            zoom=zoom,
-            mapbox_style=mapbox_style,
-            title=title,
-            range_color=range_color,
-            center=center,
+        self.gdf = gpd.read_file(shapefile)
+        self.sea_path = SeaPath(shapefile, verbose=False)
+
+        longitude = np.asarray(longitude)
+        latitude = np.asarray(latitude)
+        z_values = np.asarray(z_values)
+
+        self.config.logger.info(f"Validating {len(longitude)} data points")
+        self.validate_sea_points(longitude, latitude)
+
+        self.longitude = longitude
+        self.latitude = latitude
+        self.z_values = z_values
+
+        self.config.logger.info(
+            f"Creating OrdinaryKriging with {variogram_model} model"
         )
 
-        fig.update_traces(marker=dict(size=marker_size, opacity=marker_opacity))
-
-        fig.update_layout(
-            margin=layout_margin, width=layout_width, height=layout_height
+        self.OK = OrdinaryKriging(
+            longitude,
+            latitude,
+            z_values,
+            variogram_model=variogram_model,
+            variogram_parameters=variogram_parameters,
+            verbose=False,
+            enable_plotting=False,
         )
 
-        if show_fig:
-            fig.show()
+    def monkey_patch_dist_func(self):
+        self._original_pdist = pykrige.core.pdist
+        self._original_cdist = pykrige.ok.cdist
+        self._original_core_cdist = pykrige.core.cdist
 
-        if html_path is not None:
-            fig.write_html(html_path)
+        pykrige.core.pdist = self.sea_path_pdist
+        pykrige.core.cdist = self.sea_path_cdist
+        pykrige.ok.cdist = self.sea_path_cdist
 
-        return fig
+    def restore_dist_func(self):
+        pykrige.core.pdist = self._original_pdist
+        pykrige.core.cdist = self._original_cdist
+        pykrige.ok.cdist = self._original_core_cdist
 
-    def _calc_distmx(self):
-        dist_mx = [
-            [
-                max(self.dist_func(apoint, bpoint), distance.euclidean(apoint, bpoint))
-                for bpoint in self.known_points
-            ]
-            for apoint in self.known_points
-        ]
-        self.distmx = np.array(dist_mx)
+    def validate_sea_points(self, longitude, latitude):
+        land_geometry = self.gdf.geometry.union_all()
+        points_inside = []
+        points_outside = []
 
-    def _calc_semivariance(self):
-        z = self.z
-        z = (z - z.mean()) / (z.std())
-        n = len(z)
-        self.semivarmx = np.array(
-            [[0.5 * (z[i] - z[j]) ** 2 for j in range(n)] for i in range(n)]
-        )
-
-    def _bin_data(self, num_bin=20):
-        upper_tri_indices = np.triu_indices(len(self.distmx[0]), k=1)
-        distances = self.distmx[upper_tri_indices]
-        semivariances = self.semivarmx[upper_tri_indices]
-
-        max_distance = distances.max()
-        bin_width = max_distance / num_bin
-        bins = np.arange(0, max_distance + bin_width, bin_width)
-        bin_centers = (bins[:-1] + bins[1:]) / 2
-
-        mean_semivariances = np.zeros(len(bin_centers))
-        for i in range(len(bin_centers)):
-            in_bin = (distances >= bins[i]) & (distances < bins[i + 1])
-            if in_bin.any():
-                mean_semivariances[i] = np.mean(semivariances[in_bin])
+        for i, (lon, lat) in enumerate(zip(longitude, latitude)):
+            point = Point(lon, lat)
+            if land_geometry.contains(point):
+                points_inside.append(i)
             else:
-                mean_semivariances[i] = np.nan
+                points_outside.append(i)
 
-        valid = ~np.isnan(mean_semivariances)
-        self.bin_centers = bin_centers[valid]
-        self.gamma = mean_semivariances[valid]
-
-    def _fit_variogram(self):
-        fit_models = {}
-        scores = {}
-        # plt.scatter(bin_centers, mean_semivariances, color="k", label="data")
-        # ax = plt.gca()
-        for model in self.models:
-            fit_model = self.models[model](dim=2)
-            _, _, r2 = fit_model.fit_variogram(
-                self.bin_centers, self.gamma, return_r2=True
+        if points_inside and points_outside:
+            raise ValueError(
+                f"Mixed point locations: {len(points_inside)} inside polygon, "
+                f"{len(points_outside)} outside polygon. All points must be either "
+                "inside or outside the polygon."
             )
-            # fit_model.plot(x_max=max(distances), ax=ax)
-            fit_models[model] = fit_model
-            scores[model] = r2
-        chosen_model = max(scores, key=scores.get)
-        self.fit_model = fit_models[chosen_model]
 
-    def plot_fit_variogram(self):
+    def sea_path_pdist(self, X, metric="euclidean"):
+        if metric != "euclidean":
+            return self._original_pdist(X, metric)
+
+        n = len(X)
+        distances = []
+        for i in range(n):
+            for j in range(i + 1, n):
+                try:
+                    dist = self.sea_path.calc_path_from_G(X[i], X[j])
+                except ValueError:
+                    dist = np.sqrt((X[i][0] - X[j][0]) ** 2 + (X[i][1] - X[j][1]) ** 2)
+                distances.append(dist)
+        return np.array(distances)
+
+    def sea_path_cdist(self, XA, XB, metric="euclidean"):
+        if metric != "euclidean":
+            return self._original_cdist(XA, XB, metric)
+
+        distances = np.zeros((len(XA), len(XB)))
+        for i, (xa, ya) in enumerate(XA):
+            for j, (xb, yb) in enumerate(XB):
+                try:
+                    dist = self.sea_path.calc_path_from_G([xa, ya], [xb, yb])
+                except ValueError:
+                    dist = np.sqrt((xa - xb) ** 2 + (ya - yb) ** 2)
+                distances[i, j] = dist
+        return distances
+
+    def create_land_mask(self, gridx, gridy):
+        land_geometry = self.gdf.geometry.union_all()
+        self.mask = np.zeros((len(gridy), len(gridx)), dtype=bool)
+
+        for i, y in enumerate(gridy):
+            for j, x in enumerate(gridx):
+                point = Point(x, y)
+                self.mask[i, j] = land_geometry.contains(point)
+
+    def execute(self, gridx, gridy):
+        self.config.logger.info(f"Executing kriging on {len(gridx)}x{len(gridy)} grid")
+
+        self.monkey_patch_dist_func()
+        self.create_land_mask(gridx, gridy)
+
+        if self.config.verbose:
+            land_points = np.sum(self.mask)
+            total_points = self.mask.size
+            self.config.logger.info(f"Masked {land_points}/{total_points} land points")
+
+        z, ss = self.OK.execute("masked", gridx, gridy, mask=self.mask)
+        self.restore_dist_func()
+
+        self.config.logger.info("Kriging execution completed")
+
+        return z, ss
+
+    def plot_results(self, z, gridx, gridy, show=True, add_scatter=True):
         fig, ax = plt.subplots()
-        ax.figure.set_size_inches(8, 6)
-        ax.scatter(
-            self.distmx.flatten(),
-            self.semivarmx.flatten(),
-            color="blue",
-            label="Experimental Variogram",
-        )
-        ax.scatter(self.bin_centers, self.gamma, color="red", label="Binned Variogram")
-        ax.set_xlabel("Distance")
-        ax.set_ylabel("Semivariance")
-        ax.set_title("Raw Variogram Scatter Plot")
-        ax.legend()
-        ax.grid(True)
 
-        ax = self.fit_model.plot(x_max=max(self.distmx.flatten()), color="k")
-        ax.scatter(self.bin_centers, self.gamma, color="red", label="Binned Variogram")
-        ax.figure.set_size_inches(8, 6)
-        ax.set_xlabel("Distance")
-        ax.set_ylabel("Semivariance")
-        ax.set_title("Fitted Variogram Plot")
-        ax.legend()
-        ax.grid(True)
+        self.gdf.plot(ax=ax, facecolor=self.config.LAND_COLOR, alpha=0.7)
 
-    # predict part
-    def _get_variogram_matrix(self):
-        n = self.distmx.shape[0]
-        self.variogram_matrix = np.array(
-            [
-                [self.fit_model.variogram(self.distmx[i, j]) for j in range(n)]
-                for i in range(n)
-            ]
+        im = ax.imshow(
+            z,
+            extent=[gridx.min(), gridx.max(), gridy.min(), gridy.max()],
+            origin="lower",
+            cmap="viridis",
+            alpha=0.8,
         )
 
-    def _predict_kriging(self, unknown_point):
-        n = self.known_points.shape[0]
-        distances = np.array(
-            [self.dist_func(self.known_points[i], unknown_point) for i in range(n)]
-        )
-        variogram_vector = self.fit_model.variogram(distances)
+        if add_scatter:
+            ax.scatter(
+                self.longitude, self.latitude, c="red", s=50, marker="x", zorder=10
+            )
 
-        try:
-            weights = np.linalg.solve(self.variogram_matrix, variogram_vector)
-        except np.linalg.LinAlgError:
-            weights = np.linalg.pinv(self.variogram_matrix) @ variogram_vector
+        ax.set_xlim(gridx.min(), gridx.max())
+        ax.set_ylim(gridy.min(), gridy.max())
+        plt.colorbar(im, ax=ax, shrink=0.8)
 
-        predicted_value = np.dot(weights, self.z)
-        return predicted_value
-
-    def _transform_gdf_to_grid(self):
-        transformer = TransformerGDF()
-        transformer.load(self.gdf)
-
-        meshgrid = transformer.meshgrid(density=0.5)
-        self.grid_mask = transformer.mask()
-        self.X, self.Y = meshgrid
-
-    def predict(self):
-        self._transform_gdf_to_grid()
-        self.Z = []
-        for query_point in zip(self.X.flatten(), self.Y.flatten()):
-            try:
-                predict_value = self._predict_kriging(
-                    query_point,
-                )
-            except Exception:
-                predict_value = 0
-            self.Z.append(predict_value)
-        self.Z = np.array(self.Z).reshape(self.X.shape)
-        self.Z_mask[self.grid_mask] = None
-
-    def plot_predict_result(self, title=None, show_base_map=True, vmin=None, vmax=None):
-        fig, ax = plt.subplots()
-        self.gdf.plot(
-            facecolor="none", edgecolor="black", linewidth=1.5, zorder=5, ax=ax
-        )
-        cx.add_basemap(ax, crs=self.crs)
-
-        Z_reverse = self.Z_mask[::-1]
-        plt.imshow(
-            Z_reverse,
-            extent=[self.X.min(), self.X.max(), self.Y.min(), self.Y.max()],
-            interpolation="gaussian",
-            vmin=vmin,
-            vmax=vmax,
-        )
-        cax = fig.add_axes([0.93, 0.134, 0.02, 0.72])
-        plt.colorbar(cax=cax, orientation="vertical")
-        plt.title(title)
-        ax.grid(lw=1)
-        ax.set_xlim(min(self.X[0]), max(self.X[0]))
-        ax.set_ylim(min(self.Y[0]), max(self.Y[-1]))
+        if show:
+            plt.tight_layout()
+            plt.show()
+        else:
+            return fig, ax
