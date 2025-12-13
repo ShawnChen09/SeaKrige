@@ -102,40 +102,12 @@ class SeaPath:
         if self.is_multipolygon:
             for geom in self.obs.geoms:
                 verts.extend(list(geom.exterior.coords[:-1]))
-                coords = list(geom.exterior.coords)
-                for i in range(len(coords) - 1):
-                    mid = (
-                        (coords[i][0] + coords[i + 1][0]) / 2,
-                        (coords[i][1] + coords[i + 1][1]) / 2,
-                    )
-                    verts.append(mid)
                 for interior in geom.interiors:
                     verts.extend(list(interior.coords[:-1]))
         else:
             verts.extend(list(self.obs.exterior.coords[:-1]))
-            coords = list(self.obs.exterior.coords)
-            for i in range(len(coords) - 1):
-                mid = (
-                    (coords[i][0] + coords[i + 1][0]) / 2,
-                    (coords[i][1] + coords[i + 1][1]) / 2,
-                )
-                verts.append(mid)
             for interior in self.obs.interiors:
                 verts.extend(list(interior.coords[:-1]))
-
-        xmin, ymin, xmax, ymax = self.bounds
-        margin = self.config.BOUNDARY_MARGIN
-        boundary_points = [
-            (xmin - margin, ymin - margin),
-            (xmax + margin, ymin - margin),
-            (xmax + margin, ymax + margin),
-            (xmin - margin, ymax + margin),
-            (xmin - margin, (ymin + ymax) / 2),
-            (xmax + margin, (ymin + ymax) / 2),
-            ((xmin + xmax) / 2, ymin - margin),
-            ((xmin + xmax) / 2, ymax + margin),
-        ]
-        verts.extend(boundary_points)
 
         self.vertices = np.array(verts)
 
