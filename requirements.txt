@@ -1,5 +1,3 @@
 geopandas
 matplotlib
-numpy
 pykrige
-Shapely
