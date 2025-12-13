@@ -2,7 +2,7 @@ import logging
 import sys
 
 
-def setup_logger(name="seakrige"):
+def setup_logger(name):
     logger = logging.getLogger(name)
 
     if not logger.handlers:
@@ -12,6 +12,3 @@ def setup_logger(name="seakrige"):
         logger.addHandler(handler)
 
     return logger
-
-
-logger = setup_logger()

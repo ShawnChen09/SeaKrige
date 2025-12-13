@@ -1,6 +1,6 @@
 import logging
 
-from .logger import logger
+from .logger import setup_logger
 
 
 class Config:
@@ -18,8 +18,8 @@ class Config:
     SEA_COLOR = "lightblue"
     LAND_COLOR = "lightgreen"
 
-    def __init__(self, verbose=False):
-        self.logger = logger
+    def __init__(self, name, verbose=False):
+        self.logger = setup_logger(name)
         self.verbose = verbose
 
     def __setattr__(self, name, value):

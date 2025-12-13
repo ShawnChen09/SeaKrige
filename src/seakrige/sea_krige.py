@@ -21,7 +21,7 @@ class SeaKrige:
         variogram_parameters=[1.0, 0.5, 0.1],
         verbose=True,
     ):
-        self.config = Config(verbose=verbose)
+        self.config = Config("seakrige", verbose=verbose)
 
         self.gdf = gpd.read_file(shapefile)
         self.sea_path = SeaPath(shapefile, verbose=False)
@@ -38,8 +38,9 @@ class SeaKrige:
         self.z_values = z_values
 
         self.config.logger.info(
-            f"Creating OrdinaryKriging with {variogram_model} model"
+            f"Creating OrdinaryKriging with '{variogram_model}' model"
         )
+        self.config.logger.info(f"Variogram parameters: {variogram_parameters}")
 
         self.OK = OrdinaryKriging(
             longitude,
@@ -123,8 +124,6 @@ class SeaKrige:
                 self.mask[i, j] = land_geometry.contains(point)
 
     def execute(self, gridx, gridy):
-        self.config.logger.info(f"Executing kriging on {len(gridx)}x{len(gridy)} grid")
-
         self.monkey_patch_dist_func()
         self.create_land_mask(gridx, gridy)
 
@@ -133,6 +132,7 @@ class SeaKrige:
             total_points = self.mask.size
             self.config.logger.info(f"Masked {land_points}/{total_points} land points")
 
+        self.config.logger.info(f"Executing kriging on {len(gridx)}x{len(gridy)} grid")
         z, ss = self.OK.execute("masked", gridx, gridy, mask=self.mask)
         self.restore_dist_func()
 

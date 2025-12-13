@@ -78,8 +78,7 @@ class Graph:
 
 class SeaPath:
     def __init__(self, shapefile, verbose=True):
-        self.config = Config(verbose=verbose)
-        self.verbose = verbose
+        self.config = Config("seapath", verbose=verbose)
 
         self.load_shp(shapefile)
         self.extract_v()
