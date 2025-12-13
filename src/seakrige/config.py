@@ -16,7 +16,7 @@ class Config:
     PATH_WIDTH = 3
 
     SEA_COLOR = "lightblue"
-    LAND_COLOR = "lightgreen"
+    LAND_COLOR = "lightgrey"
 
     def __init__(self, name, verbose=False):
         self.logger = setup_logger(name)

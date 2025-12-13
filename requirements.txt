@@ -1,10 +1,5 @@
-contextily==1.6.2
-geokrige==0.0.1
-geopandas==1.0.1
-gstools==1.6.0
-libpysal==4.12.1
-matplotlib==3.9.2
-networkx==3.3
-numpy==2.1.1
-scipy==1.14.1
-Shapely==2.0.6
+geopandas
+matplotlib
+numpy
+pykrige
+Shapely
