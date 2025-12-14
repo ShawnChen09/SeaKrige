@@ -23,31 +23,43 @@ class SeaKrige:
     ):
         self.config = Config("seakrige", verbose=verbose)
 
-        self.gdf = gpd.read_file(shapefile)
+        self.config.logger.info(f"Loading shapefile: {shapefile}")
         self.sea_path = SeaPath(shapefile, verbose=False)
 
+        SeaKrige.validate_data_points(longitude, latitude, z_values)
         longitude = np.asarray(longitude)
         latitude = np.asarray(latitude)
         z_values = np.asarray(z_values)
 
-        self.config.logger.info(f"Validating {len(longitude)} data points")
-        self.validate_sea_points(longitude, latitude)
-
+        self.config.logger.info(f"Loading {len(longitude)} data points")
         self.longitude = longitude
         self.latitude = latitude
         self.z_values = z_values
 
-        self.config.logger.info(
-            f"Creating OrdinaryKriging with '{variogram_model}' model"
-        )
-        self.config.logger.info(f"Variogram parameters: {variogram_parameters}")
+        self.variogram_model = variogram_model
+        self.variogram_parameters = variogram_parameters
 
+    def validate_data_points(longitude, latitude, z_values):
+        if len(longitude) != len(latitude) or len(longitude) != len(z_values):
+            raise ValueError(
+                "longitude, latitude and z_values must have the same length"
+            )
+        if -180 > np.min(longitude) or np.max(longitude) > 180:
+            raise ValueError("longitude must be between -180 and 180")
+        if -90 > np.min(latitude) or np.max(latitude) > 90:
+            raise ValueError("latitude must be between -90 and 90")
+
+    def get_ok(self):
+        self.config.logger.info(
+            f"Creating OrdinaryKriging with '{self.variogram_model}' model"
+        )
+        self.config.logger.info(f"Variogram parameters: {self.variogram_parameters}")
         self.OK = OrdinaryKriging(
-            longitude,
-            latitude,
-            z_values,
-            variogram_model=variogram_model,
-            variogram_parameters=variogram_parameters,
+            self.longitude,
+            self.latitude,
+            self.z_values,
+            variogram_model=self.variogram_model,
+            variogram_parameters=self.variogram_parameters,
             verbose=False,
             enable_plotting=False,
         )
@@ -65,25 +77,6 @@ class SeaKrige:
         pykrige.core.pdist = self._original_pdist
         pykrige.core.cdist = self._original_cdist
         pykrige.ok.cdist = self._original_core_cdist
-
-    def validate_sea_points(self, longitude, latitude):
-        land_geometry = self.gdf.geometry.union_all()
-        points_inside = []
-        points_outside = []
-
-        for i, (lon, lat) in enumerate(zip(longitude, latitude)):
-            point = Point(lon, lat)
-            if land_geometry.contains(point):
-                points_inside.append(i)
-            else:
-                points_outside.append(i)
-
-        if points_inside and points_outside:
-            raise ValueError(
-                f"Mixed point locations: {len(points_inside)} inside polygon, "
-                f"{len(points_outside)} outside polygon. All points must be either "
-                "inside or outside the polygon."
-            )
 
     def sea_path_pdist(self, X, metric="euclidean"):
         if metric != "euclidean":
@@ -115,7 +108,7 @@ class SeaKrige:
         return distances
 
     def create_land_mask(self, gridx, gridy):
-        land_geometry = self.gdf.geometry.union_all()
+        land_geometry = self.sea_path.gdf.geometry.union_all()
         self.mask = np.zeros((len(gridy), len(gridx)), dtype=bool)
 
         for i, y in enumerate(gridy):
@@ -124,7 +117,16 @@ class SeaKrige:
                 self.mask[i, j] = land_geometry.contains(point)
 
     def execute(self, gridx, gridy):
+        self.config.logger.info(f"Loading {len(gridx)}x{len(gridy)} grid")
+        self.gridx = gridx
+        self.gridy = gridy
+
+        if not hasattr(self, "OK"):
+            self.get_ok()
+
         self.monkey_patch_dist_func()
+
+        self.config.logger.info("Creating land mask")
         self.create_land_mask(gridx, gridy)
 
         if self.config.verbose:
@@ -132,34 +134,62 @@ class SeaKrige:
             total_points = self.mask.size
             self.config.logger.info(f"Masked {land_points}/{total_points} land points")
 
-        self.config.logger.info(f"Executing kriging on {len(gridx)}x{len(gridy)} grid")
-        z, ss = self.OK.execute("masked", gridx, gridy, mask=self.mask)
-        self.restore_dist_func()
-
+        self.config.logger.info("Executing kriging ...")
+        self.z, self.ss = self.OK.execute("masked", gridx, gridy, mask=self.mask)
         self.config.logger.info("Kriging execution completed")
 
-        return z, ss
+        self.restore_dist_func()
 
-    def plot_results(self, z, gridx, gridy, show=True, add_scatter=True):
+    def plot(
+        self,
+        show=True,
+        use_alpha=True,
+        alpha_resolution=0.05,
+        cmap="viridis",
+        add_scatter=True,
+        scatter_color="red",
+        scatter_size=50,
+        scatter_marker="x",
+    ):
+        if not hasattr(self, "z") or not hasattr(self, "ss"):
+            self.config.logger.error(
+                "No kriging results to plot. Run the `execute` function first."
+            )
+            return
+        if use_alpha:
+            alpha = self.calc_alpha(alpha_resolution)
+        else:
+            alpha = None
+
         fig, ax = plt.subplots()
 
-        self.gdf.plot(ax=ax, facecolor=self.config.LAND_COLOR, alpha=0.7)
+        self.sea_path.gdf.plot(ax=ax, facecolor=self.config.LAND_COLOR, alpha=0.7)
 
         im = ax.imshow(
-            z,
-            extent=[gridx.min(), gridx.max(), gridy.min(), gridy.max()],
+            self.z,
+            extent=[
+                self.gridx.min(),
+                self.gridx.max(),
+                self.gridy.min(),
+                self.gridy.max(),
+            ],
             origin="lower",
-            cmap="viridis",
-            alpha=0.8,
+            cmap=cmap,
+            alpha=alpha,
         )
 
         if add_scatter:
             ax.scatter(
-                self.longitude, self.latitude, c="red", s=50, marker="x", zorder=10
+                self.longitude,
+                self.latitude,
+                c=scatter_color,
+                s=scatter_size,
+                marker=scatter_marker,
+                zorder=10,
             )
 
-        ax.set_xlim(gridx.min(), gridx.max())
-        ax.set_ylim(gridy.min(), gridy.max())
+        ax.set_xlim(self.gridx.min(), self.gridx.max())
+        ax.set_ylim(self.gridy.min(), self.gridy.max())
         plt.colorbar(im, ax=ax, shrink=0.8)
 
         if show:
@@ -167,3 +197,13 @@ class SeaKrige:
             plt.show()
         else:
             return fig, ax
+
+    def calc_alpha(self, res):
+        valid_variance = self.ss[~np.isnan(self.ss)]
+        min_var, max_var = valid_variance.min(), valid_variance.max()
+
+        normalized_variance = (self.ss - min_var) / (max_var - min_var)
+
+        variance_alpha = 1.0 - normalized_variance
+        variance_alpha = np.ceil(variance_alpha / res) * res
+        return np.clip(variance_alpha, 0, 1.0)

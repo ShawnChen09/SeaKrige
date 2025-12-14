@@ -86,9 +86,9 @@ class SeaPath:
         self._path_cache = {}
 
     def load_shp(self, shapefile):
-        gdf = pyogrio.read_dataframe(shapefile)
-        self.crs = gdf.crs
-        self.obs = unary_union(gdf.geometry)
+        self.gdf = pyogrio.read_dataframe(shapefile)
+        self.crs = self.gdf.crs
+        self.obs = unary_union(self.gdf.geometry)
         self.is_multipolygon = hasattr(self.obs, "geoms")
 
         if hasattr(self.obs, "bounds"):
