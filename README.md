@@ -1,6 +1,6 @@
 # SeaKrige
 
-A barrier-aware kriging implementation that uses obstacle-avoiding path distances instead of Euclidean distances for spatial interpolation. Accounts for any type of spatial barriers defined by polygon geometries.
+A kriging implementation that uses obstacle-avoiding path distances instead of Euclidean distances for spatial interpolation. Accounts for spatial barriers defined by polygon geometries.
 
 ## Demo
 
@@ -8,9 +8,11 @@ A barrier-aware kriging implementation that uses obstacle-avoiding path distance
 |---------------------------------------------|-------------------------------------------|
 | <img src="https://github.com/ShawnChen09/SeaKrige/raw/main/img/sea_path.jpg" width="300"/> | <img src="https://github.com/ShawnChen09/SeaKrige/raw/main/img/sea_krige.jpg" width="300"/> |
 
-## Installation
+## Quick Start
 
-1. Install required packages:
+### Installation
+
+1. Install dependencies (pyKrige, geopandas, matplotlib):
 ```sh
 python -m pip install -r requirements.txt
 ```
@@ -20,18 +22,13 @@ python -m pip install -r requirements.txt
 python -m pip install -e .
 ```
 
+### Basic Usage
+See the `example/` folder for usage examples demonstrating both `SeaPath` and `SeaKrige` functionality.
+
 ## Modules
 
 ### `SeaPath`
-Calculates shortest obstacle-free distances between coordinates while avoiding barriers defined in shapefiles. Uses visibility graph algorithms to find optimal paths through accessible areas.
+Uses Dijkstra to calculate shortest obstacle-free distances between coordinates.
 
 ### `SeaKrige`
-Performs ordinary kriging interpolation using barrier-aware path distances instead of Euclidean distances. Integrates with [PyKrige](https://geostat-framework.readthedocs.io/projects/pykrige/en/stable/) through monkey-patching of distance functions.
-
-### `Config`
-Manages configuration settings for both modules, including customizable parameters for boundary margins, visualization settings, etc.
-
-
-
-## Usage
-See the `example/` folder for complete usage examples and test scripts demonstrating both `SeaPath` and `SeaKrige` functionality.
+Performs ordinary kriging interpolation using SeaPath distances instead of Euclidean distances. Integrates with [PyKrige](https://geostat-framework.readthedocs.io/projects/pykrige/en/stable/) through monkey-patching of distance functions.
