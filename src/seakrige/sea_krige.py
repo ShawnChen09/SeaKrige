@@ -1,8 +1,8 @@
-import geopandas as gpd
+import time
+
 import matplotlib.pyplot as plt
 import numpy as np
-import pykrige.core
-import pykrige.ok
+import pykrige
 from pykrige.ok import OrdinaryKriging
 from shapely.geometry import Point
 
@@ -97,15 +97,52 @@ class SeaKrige:
         if metric != "euclidean":
             return self._original_cdist(XA, XB, metric)
 
-        distances = np.zeros((len(XA), len(XB)))
-        for i, (xa, ya) in enumerate(XA):
-            for j, (xb, yb) in enumerate(XB):
-                try:
-                    dist = self.sea_path.calc_path_from_G([xa, ya], [xb, yb])
-                except ValueError:
-                    dist = np.sqrt((xa - xb) ** 2 + (ya - yb) ** 2)
-                distances[i, j] = dist
-        return distances
+        start_time = time.time()
+        euclidean_matrix = self._original_cdist(XA, XB, "euclidean")
+
+        if self.config.verbose:
+            self.config.logger.info("Checking visibility for point pairs")
+
+        visibility_matrix = self.sea_path.is_visible_batch(XA, XB)
+        blocked_pairs = np.where(~visibility_matrix)
+        sea_distances = euclidean_matrix.copy()
+        total_blocked = len(blocked_pairs[0])
+
+        self.config.logger.info(
+            f"Calculating sea-path for {total_blocked}/{euclidean_matrix.size} blocked point pairs"
+        )
+
+        if total_blocked > 0:
+            blocked_point_pairs = [(XA[i], XB[j]) for i, j in zip(*blocked_pairs)]
+
+            try:
+                batch_distances = self.sea_path.calc_multiple_paths_batch(
+                    blocked_point_pairs
+                )
+
+                for idx, (i, j) in enumerate(zip(*blocked_pairs)):
+                    sea_distances[i, j] = batch_distances[idx]
+
+            except (AttributeError, Exception):
+                self.config.logger.warning(
+                    "Batch calculation failed. Falling back to individual calculations."
+                )
+                for idx, (i, j) in enumerate(zip(*blocked_pairs)):
+                    if self.config.verbose and idx % 1000 == 0:
+                        self.config.logger.info(
+                            f"Progress: {idx}/{total_blocked} ({100 * idx / total_blocked:.1f}%)"
+                        )
+
+                    try:
+                        sea_distances[i, j] = self.sea_path.calc_path(
+                            XA[i], XB[j], check_visibility=False
+                        )
+                    except ValueError:
+                        pass
+        self.config.logger.info(
+            f"Sea-path calculation completed in {time.time() - start_time:.2f} seconds"
+        )
+        return sea_distances
 
     def create_land_mask(self, gridx, gridy):
         land_geometry = self.sea_path.gdf.geometry.union_all()

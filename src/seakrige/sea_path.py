@@ -139,9 +139,20 @@ class SeaPath:
 
         self.vertices = np.array(verts)
 
-    def is_visible(self, p1, p2):
-        l = LineString([p1, p2])
-        return not self.obs.crosses(l) and not self.obs.contains(l)
+    def is_visible(self, coord_1, coord_2):
+        direct_path = LineString([coord_1, coord_2])
+        return not self.obs.crosses(direct_path) and not self.obs.contains(direct_path)
+
+    def is_visible_batch(self, coord_list_1, coord_list_2):
+        n_A, n_B = len(coord_list_1), len(coord_list_2)
+        visibility_matrix = np.ones((n_A, n_B), dtype=bool)
+
+        for i in range(n_A):
+            for j in range(n_B):
+                visible = self.is_visible(coord_list_1[i], coord_list_2[j])
+                visibility_matrix[i, j] = visible
+
+        return visibility_matrix
 
     def build_graph(self):
         self.G = Graph()
@@ -227,6 +238,22 @@ class SeaPath:
                 graph.add_edge(point_id, node_id, weight=dist)
 
         return point_id
+
+    def calc_multiple_paths_batch(self, point_pairs):
+        results = []
+
+        for i, (coord_1, coord_2) in enumerate(point_pairs):
+            try:
+                results.append(
+                    self.calc_path_from_G(coord_1, coord_2, check_visibility=False)
+                )
+            except KeyboardInterrupt:
+                self.config.logger.info(
+                    f"Interrupted at {i}/{len(point_pairs)} calculations"
+                )
+                raise
+
+        return results
 
     def plot_path(self):
         if not hasattr(self, "path_coords"):
