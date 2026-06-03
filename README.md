@@ -23,7 +23,7 @@ python -m pip install -e .
 ```
 
 ### Basic Usage
-See the `examples/` folder for usage examples demonstrating both `SeaPath` and `SeaKrige` functionality.
+See the [`examples/`](./examples/) folder for usage examples demonstrating both `SeaPath` and `SeaKrige` functionality.
 
 ## Modules
 
