@@ -3,6 +3,7 @@ import heapq
 import matplotlib.pyplot as plt
 import numpy as np
 import pyogrio
+from pyproj import Geod
 from shapely.geometry import LineString
 from shapely.ops import unary_union
 
@@ -107,6 +108,7 @@ class Graph:
 class SeaPath:
     def __init__(self, shapefile, verbose=True):
         self.config = Config("seapath", verbose=verbose)
+        self.geod = Geod(ellps="WGS84")
 
         self.load_shp(shapefile)
         self.extract_v()
@@ -154,6 +156,15 @@ class SeaPath:
 
         return visibility_matrix
 
+    def distance_meter(self, coord_1, coord_2):
+        _, _, dist = self.geod.inv(
+            coord_1[0],
+            coord_1[1],
+            coord_2[0],
+            coord_2[1],
+        )
+        return dist
+
     def build_graph(self):
         self.G = Graph()
         n_vertices = len(self.vertices)
@@ -167,86 +178,82 @@ class SeaPath:
         for i in range(n_vertices):
             for j in range(i + 1, n_vertices):
                 if self.is_visible(self.vertices[i], self.vertices[j]):
-                    dist = np.linalg.norm(self.vertices[i] - self.vertices[j])
+                    dist = self.distance_meter(self.vertices[i], self.vertices[j])
                     self.G.add_edge(i, j, weight=dist)
                     edges_added += 1
 
         self.config.logger.info(f"Added {edges_added} edges to graph")
 
-    def calc_direct_distance(self, s: tuple[float, float], t: tuple[float, float]):
-        return np.linalg.norm(np.array(s) - np.array(t))
+    def calc_direct_distance(
+        self, coord_1: tuple[float, float], coord_2: tuple[float, float]
+    ):
+        return self.distance_meter(coord_1, coord_2)
 
-    def calc_path_from_G(self, s: tuple[float, float], t: tuple[float, float]):
-        self.config.logger.info(f"Calculating path from {s} to {t}")
+    def add_temp_point(self, graph, point):
+        point_id = max(graph.nodes.keys()) + 1 if graph.nodes else len(self.vertices)
+        graph.add_node(point_id, pos=point)
 
-        cache_key = (tuple(s), tuple(t))
+        for node_id in graph.nodes:
+            if node_id == point_id:
+                continue
+            vertex = graph.nodes[node_id]["pos"]
+            if self.is_visible(point, vertex):
+                dist = self.distance_meter(point, vertex)
+                graph.add_edge(point_id, node_id, weight=dist)
+
+        return point_id
+
+    def calc_path(
+        self,
+        coord_1: tuple[float, float],
+        coord_2: tuple[float, float],
+        check_visibility=True,
+    ):
+        cache_key = (tuple(coord_1), tuple(coord_2))
         if self.config.ENABLE_CACHING and cache_key in self._path_cache:
             cached = self._path_cache[cache_key]
-            self.path_coords = cached["path_coords"]
             self.path_length = cached["length"]
-            self.config.logger.info(
-                f"Using cached path, length: {self.path_length:.4f}"
-            )
             return self.path_length
 
-        if self.is_visible(s, t):
-            direct_dist = self.calc_direct_distance(s, t)
-            self.config.logger.info(f"Direct distance: {direct_dist:.4f} units")
-            self.path_coords = [s, t]
+        if check_visibility and self.is_visible(coord_1, coord_2):
+            direct_dist = self.calc_direct_distance(coord_1, coord_2)
+            self.path_coords = [coord_1, coord_2]
             self.path_length = direct_dist
             self._path_cache[cache_key] = {
                 "path_coords": self.path_coords,
                 "length": self.path_length,
             }
             return self.path_length
-        else:
-            self.config.logger.info("Direct path blocked by land")
-
-        G_temp = self.G.copy()
-        source_id = self.add_temp_point(G_temp, s)
-        target_id = self.add_temp_point(G_temp, t)
-
-        if self.is_visible(s, t):
-            dist = self.calc_direct_distance(s, t)
-            G_temp.add_edge(source_id, target_id, weight=dist)
 
         try:
-            G_temp.dijkstra(source_id, target_id)
-            self.path_coords = [G_temp.nodes[node]["pos"] for node in G_temp.path]
-            self.path_length = G_temp.length
+            G_temp = self.G.copy()
+            temp_point_1 = self.add_temp_point(G_temp, coord_1)
+            temp_point_2 = self.add_temp_point(G_temp, coord_2)
+
+            path_length = G_temp.dijkstra(temp_point_1, temp_point_2, False)
 
             self._path_cache[cache_key] = {
-                "path_coords": self.path_coords,
-                "length": self.path_length,
+                "length": path_length,
             }
-            self.config.logger.info(f"Sea Path length: {self.path_length:.4f} units")
-            return self.path_length
+
+            self._last_calc = {
+                "coord_1": coord_1,
+                "coord_2": coord_2,
+            }
+
+            return path_length
 
         except ValueError:
             raise ValueError("No path exists between coordinates")
-
-    def add_temp_point(self, graph, p):
-        point_id = max(graph.nodes.keys()) + 1 if graph.nodes else len(self.vertices)
-        graph.add_node(point_id, pos=p)
-
-        for node_id in graph.nodes:
-            if node_id == point_id:
-                continue
-            vertex = graph.nodes[node_id]["pos"]
-            if self.is_visible(p, vertex):
-                dist = np.linalg.norm(np.array(p) - np.array(vertex))
-                graph.add_edge(point_id, node_id, weight=dist)
-
-        return point_id
 
     def calc_multiple_paths_batch(self, point_pairs):
         results = []
 
         for i, (coord_1, coord_2) in enumerate(point_pairs):
             try:
-                results.append(
-                    self.calc_path_from_G(coord_1, coord_2, check_visibility=False)
-                )
+                results.append(self.calc_path(coord_1, coord_2, check_visibility=False))
+            except ValueError:
+                results.append(self.distance_meter(coord_1, coord_2) * 1.2)
             except KeyboardInterrupt:
                 self.config.logger.info(
                     f"Interrupted at {i}/{len(point_pairs)} calculations"
@@ -257,7 +264,19 @@ class SeaPath:
 
     def plot_path(self):
         if not hasattr(self, "path_coords"):
-            raise ValueError("No path calculated. Call calc_path_from_G() first.")
+            if not hasattr(self, "_last_calc"):
+                raise ValueError("No path calculated. Call calc_path_from_G() first.")
+
+            # Recalculate path for plotting
+            last_calc = self._last_calc
+            coord_1, coord_2 = last_calc["coord_1"], last_calc["coord_2"]
+
+            G_temp = self.G.copy()
+            temp_point_1 = self.add_temp_point(G_temp, coord_1)
+            temp_point_2 = self.add_temp_point(G_temp, coord_2)
+
+            path_indices = G_temp.dijkstra(temp_point_1, temp_point_2, True)
+            self.path_coords = [G_temp.nodes[idx]["pos"] for idx in path_indices]
 
         path_coords = np.array(self.path_coords)
         plt.plot(
@@ -272,13 +291,13 @@ class SeaPath:
             path_coords[0, 0],
             path_coords[0, 1],
             s=100,
-            label="Start",
+            label="coord_1",
         )
         plt.scatter(
             path_coords[-1, 0],
             path_coords[-1, 1],
             s=100,
-            label="End",
+            label="coord_2",
         )
 
     def plot_G(self):

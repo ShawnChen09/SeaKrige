@@ -87,7 +87,7 @@ class SeaKrige:
         for i in range(n):
             for j in range(i + 1, n):
                 try:
-                    dist = self.sea_path.calc_path_from_G(X[i], X[j])
+                    dist = self.sea_path.calc_path(X[i], X[j])
                 except ValueError:
                     dist = np.sqrt((X[i][0] - X[j][0]) ** 2 + (X[i][1] - X[j][1]) ** 2)
                 distances.append(dist)
