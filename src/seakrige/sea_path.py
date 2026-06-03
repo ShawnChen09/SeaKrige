@@ -34,46 +34,74 @@ class Graph:
         new_G.edges = {k: v.copy() for k, v in self.edges.items()}
         return new_G
 
-    def _dijkstra(self, start, end):
-        distances = {node: float("inf") for node in self.nodes}
-        distances[start] = 0
-        previous = {}
-        pq = [(0, start)]
-        visited = set()
+    def _dijkstra(self, start, end, return_path=True):
+        if return_path:
+            distances = {node: float("inf") for node in self.nodes}
+            distances[start] = 0
+            previous = {}
+            pq = [(0, start)]
+            visited = set()
 
-        while pq:
-            current_dist, current = heapq.heappop(pq)
+            while pq:
+                current_dist, current = heapq.heappop(pq)
 
-            if current in visited:
-                continue
-            visited.add(current)
-
-            if current == end:
-                path = []
-                while current is not None:
-                    path.append(current)
-                    current = previous.get(current)
-                return path[::-1]
-
-            for neighbor in self.get_neighbors(current):
-                if neighbor in visited:
+                if current in visited:
                     continue
+                visited.add(current)
 
-                weight = self.edges[current][neighbor]
-                distance = current_dist + weight
+                if current == end:
+                    path = []
+                    while current is not None:
+                        path.append(current)
+                        current = previous.get(current)
+                    return path[::-1], current_dist
 
-                if distance < distances[neighbor]:
-                    distances[neighbor] = distance
-                    previous[neighbor] = current
-                    heapq.heappush(pq, (distance, neighbor))
+                for neighbor in self.get_neighbors(current):
+                    if neighbor in visited:
+                        continue
+
+                    weight = self.edges[current][neighbor]
+                    distance = current_dist + weight
+
+                    if distance < distances[neighbor]:
+                        distances[neighbor] = distance
+                        previous[neighbor] = current
+                        heapq.heappush(pq, (distance, neighbor))
+        else:
+            distances = {node: float("inf") for node in self.nodes}
+            distances[start] = 0
+            pq = [(0, start)]
+            visited = set()
+
+            while pq:
+                current_dist, current = heapq.heappop(pq)
+
+                if current in visited:
+                    continue
+                visited.add(current)
+
+                if current == end:
+                    return current_dist
+
+                for neighbor in self.get_neighbors(current):
+                    if neighbor in visited:
+                        continue
+
+                    weight = self.edges[current][neighbor]
+                    distance = current_dist + weight
+
+                    if distance < distances[neighbor]:
+                        distances[neighbor] = distance
+                        heapq.heappush(pq, (distance, neighbor))
 
         raise ValueError("No path exists")
 
-    def dijkstra(self, start, end):
-        self.path = self._dijkstra(start, end)
-        self.length = 0
-        for i in range(len(self.path) - 1):
-            self.length += self.edges[self.path[i]][self.path[i + 1]]
+    def dijkstra(self, start, end, return_path=True):
+        if return_path:
+            self.path, self.length = self._dijkstra(start, end, True)
+            return self.path
+        else:
+            return self._dijkstra(start, end, False)
 
 
 class SeaPath:
