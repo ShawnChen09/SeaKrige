@@ -183,6 +183,9 @@ class SeaKrige:
         use_alpha=True,
         alpha_resolution=0.05,
         cmap="viridis",
+        interpolation=None,
+        vmin=None,
+        vmax=None,
         add_scatter=True,
         scatter_color="red",
         scatter_size=50,
@@ -212,7 +215,10 @@ class SeaKrige:
             ],
             origin="lower",
             cmap=cmap,
+            interpolation=interpolation,
             alpha=alpha,
+            vmin=vmin,
+            vmax=vmax,
         )
 
         if add_scatter:
