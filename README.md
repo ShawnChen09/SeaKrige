@@ -1,6 +1,6 @@
 # SeaKrige
 
-A kriging implementation that uses obstacle-avoiding path distances instead of Euclidean distances for spatial interpolation. Accounts for any type of spatial barriers defined by polygon geometries.
+A kriging implementation that uses obstacle-avoiding path distances instead of Euclidean distances for spatial interpolation. Accounts for spatial barriers defined by polygon geometries.
 
 ## Demo
 
@@ -12,7 +12,7 @@ A kriging implementation that uses obstacle-avoiding path distances instead of E
 
 ### Installation
 
-1. Install required packages:
+1. Install dependencies (pyKrige, geopandas, matplotlib):
 ```sh
 python -m pip install -r requirements.txt
 ```
@@ -40,4 +40,3 @@ See the `examples/` folder for usage examples demonstrating both `SeaPath` and `
 - PyKrige
 - geopandas
 - matplotlib
-
